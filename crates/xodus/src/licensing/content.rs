@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use base64::prelude::*;
 use xal::cvlib::CorrelationVector;
-//use xal::extensions::CorrelationVectorReqwestBuilder;
+use xal::extensions::CorrelationVectorReqwestBuilder;
 
+use crate::licensing::error::Error;
 use crate::licensing::utils;
 use crate::models::devicecredential::License;
 use crate::models::licensing::{
@@ -19,14 +20,13 @@ pub async fn get_license_content(
     ticket_reference: String,
     content_id: String,
     market: String,
-) -> reqwest::Result<(LicenseContentResponse, License)> {
-    let cv = CorrelationVector::new();
+) -> Result<(LicenseContentResponse, License), Error> {
+    let mut cv = CorrelationVector::new();
     let response = client
         .post("https://licensing.mp.microsoft.com/v7.0/licenses/content")
         .header("from", "XboxLicenseManager")
         .header("Authorization", device_ms_token)
         .header("user-agent", "XboxLm-PC/Microsoft.GamingServices_32.107.4002.0_x64__8wekyb3d8bbwe")
-        .header("MS-CV", cv.to_string())
         .json(&LicenseContentRequest {
             content_id,
             market,
@@ -45,6 +45,8 @@ pub async fn get_license_content(
                 }])],
             ),
         })
+        .add_cv(&mut cv)
+        .unwrap()
         .send()
         .await?;
 
