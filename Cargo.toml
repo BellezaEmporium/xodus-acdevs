@@ -9,4 +9,4 @@ tokio = { version = "1.53.1", features = ["full"] }
 base64 = { version = "0.23.1" }
 
 [patch.crates-io]
-ntfs = { git = "https://github.com/xodus-gaming/ntfs.git" }
+ntfs = { git = "https://github.com/BellezaEmporium/ntfs.git", rev = "c783516a1240a3e1aa9cc113df07c85251195bf6" }
