@@ -8,8 +8,20 @@ use crate::licensing::error::Error;
 use crate::licensing::utils;
 use crate::models::devicecredential::License;
 use crate::models::licensing::{
-    DeviceContext, LicenseContentRequest, LicenseContentResponse, LicenseUserIdentity,
+    DeviceContext, LicenseContent, LicenseContentRequest, LicenseContentResponse,
+    LicenseUserIdentity,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum LicenseContentError {
+    #[error("request error: {0}")]
+    Request(#[from] reqwest::Error),
+
+    /// The account has no entitlement for the requested content (not owned, or
+    /// not covered by the account's current subscription tier).
+    #[error("not entitled to this content: {description}")]
+    NotEntitled { description: String },
+}
 
 pub async fn get_license_content(
     client: &reqwest::Client,
@@ -18,7 +30,7 @@ pub async fn get_license_content(
     ticket_reference: String,
     content_id: String,
     market: String,
-) -> Result<(LicenseContentResponse, License), Error> {
+) -> Result<(LicenseContent, License), LicenseContentError> {
     let mut cv = CorrelationVector::new();
     let response = client
         .post("https://licensing.mp.microsoft.com/v7.0/licenses/content")
@@ -49,8 +61,18 @@ pub async fn get_license_content(
         .await?;
 
     let content_res = response.json::<LicenseContentResponse>().await?;
-    let license = &content_res.license.keys[0].value;
+    let content = match content_res {
+        LicenseContentResponse::Success { license } => license,
+        LicenseContentResponse::SatisfactionFailure {
+            satisfaction_failure,
+        } => {
+            return Err(LicenseContentError::NotEntitled {
+                description: satisfaction_failure.description,
+            });
+        }
+    };
+    let license = &content.keys[0].value;
     let license = BASE64_STANDARD.decode(license).unwrap();
     let license = quick_xml::de::from_str::<License>(&String::from_utf8(license).unwrap()).unwrap();
-    Ok((content_res, license))
+    Ok((content, license))
 }
