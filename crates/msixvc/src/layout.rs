@@ -1,4 +1,8 @@
-use std::ops::{Add, Sub};
+use std::marker::PhantomData;
+use std::ops::{Add, AddAssign, Sub};
+
+use msixvc_common::parse::byteorder::{Be, Le};
+use msixvc_common::parse::{BinaryParse, BytesReader, EmptyReader};
 
 pub const PAGE_SIZE: usize = 0x1000;
 pub const BLOCK_SIZE: usize = 0xAA000;
@@ -33,31 +37,35 @@ pub struct Bytes(
 
 impl Pages {
     /// Returns the number of bytes that this many pages span.
-    pub fn to_bytes(self) -> Bytes {
+    pub const fn to_bytes(self) -> Bytes {
         Bytes((self.0 as u64) * PAGE_SIZE as u64)
     }
 }
 
 impl Bytes {
     /// Returns whether the byte offset is page-aligned or not.
-    pub fn is_page_aligned(self) -> bool {
+    pub const fn is_page_aligned(self) -> bool {
         self.0.is_multiple_of(PAGE_SIZE as u64)
     }
 
     /// Returns the index of the page to which the byte offset belongs.
-    pub fn to_page_index(self) -> Pages {
+    pub const fn to_page_index(self) -> Pages {
         Pages((self.0 / PAGE_SIZE as u64) as u32)
     }
 
     /// Returns the number of pages that this many bytes span.
-    pub fn to_page_count(self) -> Pages {
+    pub const fn to_page_count(self) -> Pages {
         Pages(self.0.div_ceil(PAGE_SIZE as u64) as u32)
     }
 
     /// If the byte offset is page-aligned then returns its page index, else
     /// returns `None`.
-    pub fn to_page_index_aligned(self) -> Option<Pages> {
-        self.is_page_aligned().then(|| self.to_page_index())
+    pub const fn to_page_index_aligned(self) -> Option<Pages> {
+        if self.is_page_aligned() {
+            Some(self.to_page_index())
+        } else {
+            None
+        }
     }
 }
 
@@ -77,6 +85,18 @@ impl Add<Bytes> for Bytes {
     }
 }
 
+impl AddAssign for Pages {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0
+    }
+}
+
+impl AddAssign for Bytes {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0
+    }
+}
+
 impl Sub<Pages> for Pages {
     type Output = Pages;
 
@@ -92,3 +112,53 @@ impl Sub<Bytes> for Bytes {
         Bytes(self.0 - rhs.0)
     }
 }
+
+/// Marker type for parsing integers through [`BinaryParse`] into a [`Pages`].
+pub struct PagesParse<T>(PhantomData<T>);
+
+/// Marker type for parsing integers through [`BinaryParse`] into a [`Bytes`].
+pub struct BytesParse<T>(PhantomData<T>);
+
+macro_rules! impl_pages_parse {
+    ($int:ty) => {
+        impl BinaryParse for PagesParse<$int> {
+            type Output = Pages;
+            type Size = <$int as BinaryParse>::Size;
+
+            #[inline]
+            fn parse<'a>(r: BytesReader<'a, Self::Size>) -> (Pages, EmptyReader<'a>) {
+                let (n, r) = r.read::<$int>();
+                (Pages(u32::from(n)), r)
+            }
+        }
+    };
+}
+
+macro_rules! impl_bytes_parse {
+    ($int:ty) => {
+        impl BinaryParse for BytesParse<$int> {
+            type Output = Bytes;
+            type Size = <$int as BinaryParse>::Size;
+
+            #[inline]
+            fn parse<'a>(r: BytesReader<'a, Self::Size>) -> (Bytes, EmptyReader<'a>) {
+                let (n, r) = r.read::<$int>();
+                (Bytes(u64::from(n)), r)
+            }
+        }
+    };
+}
+
+impl_pages_parse!(u8);
+impl_pages_parse!(Le<u16>);
+impl_pages_parse!(Be<u16>);
+impl_pages_parse!(Le<u32>);
+impl_pages_parse!(Be<u32>);
+
+impl_bytes_parse!(u8);
+impl_bytes_parse!(Le<u16>);
+impl_bytes_parse!(Be<u16>);
+impl_bytes_parse!(Le<u32>);
+impl_bytes_parse!(Be<u32>);
+impl_bytes_parse!(Le<u64>);
+impl_bytes_parse!(Be<u64>);

@@ -1,9 +1,12 @@
+use super::layout::MAX_HASHED_PAGES;
 use super::{
     WriteablePolicyFlags, XVD_HEADER_INCL_SIGNATURE_SIZE, XvcInfoFlags, XvcRegionFlags,
     XvcRegionId, XvcRegionPresenceInfoFlags, XvdContentType, XvdSegmentMetadataSegmentFlags,
     XvdType, XvdVolumeFlags,
 };
-use crate::layout::{Bytes, LEGACY_SECTOR_SIZE, PAGE_SIZE, Pages, SECTOR_SIZE};
+use crate::layout::{
+    Bytes, BytesParse, LEGACY_SECTOR_SIZE, PAGE_SIZE, Pages, PagesParse, SECTOR_SIZE,
+};
 use crate::math::calculate_number_of_hash_pages;
 
 use msixvc_common::parse::byteorder::little_endian::*;
@@ -78,6 +81,9 @@ pub enum XvdHeaderParseError {
 
     #[error("invalid xvd content type: {0}")]
     InvalidXvdContentType(#[from] TryFromPrimitiveError<XvdContentType>),
+
+    #[error("invalid hashed pages count: {hashed_pages:?}, must be less than {MAX_HASHED_PAGES:?}")]
+    InvalidHashedPagesCount { hashed_pages: Pages },
 }
 
 impl BinaryTryParse for XvdHeader {
@@ -95,7 +101,7 @@ impl BinaryTryParse for XvdHeader {
         let (volume_flags, r) = r.read::<XvdVolumeFlags>();
         let (format_version, r) = r.read::<U32>();
         let (file_time_created, r) = r.read::<Filetime>();
-        let (drive_size, r) = r.read::<U64>();
+        let (drive_size, r) = r.read::<BytesParse<U64>>();
 
         let (vduid, r) = r.read::<Uuid>();
         let (uduid, r) = r.read::<Uuid>();
@@ -106,11 +112,46 @@ impl BinaryTryParse for XvdHeader {
         let (xvd_type, r) = r.try_read::<XvdType>()?;
         let (xvd_content_type, r) = r.try_read::<XvdContentType>()?;
 
-        let (embedded_xvd_length, r) = r.read::<U32>();
-        let (user_data_length, r) = r.read::<U32>();
-        let (xvc_data_length, r) = r.read::<U32>();
-        let (dynamic_header_length, r) = r.read::<U32>();
+        let (embedded_xvd_length, r) = r.read::<BytesParse<U32>>();
+        let (user_data_length, r) = r.read::<BytesParse<U32>>();
+        let (xvc_data_length, r) = r.read::<BytesParse<U32>>();
+        let (dynamic_header_length, r) = r.read::<BytesParse<U32>>();
         let (block_size, r) = r.read::<U32>();
+
+        // Check that the number of hashed pages doesn't exceed the maximum
+        {
+            // All sections except for `drive_size` are parsed as an u32, so
+            // they cannot overflow when adding together. Check the drive size
+            // first, and if it doesn't overflow then check the sum.
+
+            if drive_size > MAX_HASHED_PAGES.to_bytes() {
+                return Err(Self::Error::InvalidHashedPagesCount {
+                    // We can't do `drive_size.to_page_count()` here, as the cast from u64
+                    // to u32 could fail.
+                    hashed_pages: if drive_size.0.div_ceil(PAGE_SIZE as u64) >= u32::MAX as u64 {
+                        Pages(u32::MAX)
+                    } else {
+                        drive_size.to_page_count()
+                    },
+                });
+            }
+
+            // The `drive_size` didn't overflow the maximum number of pages.
+            // Now check that adding the other sections is still in-bounds.
+
+            let hashed_pages = Pages(
+                user_data_length
+                    .to_page_count()
+                    .0
+                    .saturating_add(xvc_data_length.to_page_count().0)
+                    .saturating_add(dynamic_header_length.to_page_count().0)
+                    .saturating_add(drive_size.to_page_count().0),
+            );
+
+            if hashed_pages > MAX_HASHED_PAGES {
+                return Err(Self::Error::InvalidHashedPagesCount { hashed_pages });
+            }
+        }
 
         let (ext_entries, r) = r.read::<[XvdExtEntry; 4]>();
         let (capabilities, r) = r.read::<[U16; 8]>();
@@ -132,7 +173,7 @@ impl BinaryTryParse for XvdHeader {
         let (writeable_policy_flags, r) = r.read::<WriteablePolicyFlags>();
 
         let (persistent_local_storage_size, r) = r.read::<U32>();
-        let (mutable_page_count, r) = r.read::<u8>();
+        let (mutable_page_count, r) = r.read::<PagesParse<u8>>();
 
         let (_unknown271, r) = r.read::<u8>();
         let (_unknown272, r) = r.array::<0x10>();
@@ -151,17 +192,17 @@ impl BinaryTryParse for XvdHeader {
                 volume_flags,
                 format_version,
                 file_time_created,
-                drive_size: Bytes(drive_size),
+                drive_size,
                 vduid,
                 uduid,
                 top_hash_block_hash,
                 original_xvc_data_hash,
                 xvd_type,
                 xvd_content_type,
-                embedded_xvd_length: Bytes(embedded_xvd_length as u64),
-                user_data_length: Bytes(user_data_length as u64),
-                xvc_data_length: Bytes(xvc_data_length as u64),
-                dynamic_header_length: Bytes(dynamic_header_length as u64),
+                embedded_xvd_length,
+                user_data_length,
+                xvc_data_length,
+                dynamic_header_length,
                 block_size,
                 ext_entries,
                 capabilities,
@@ -178,7 +219,7 @@ impl BinaryTryParse for XvdHeader {
                 writeable_expiration_date,
                 writeable_policy_flags,
                 persistent_local_storage_size,
-                mutable_page_count: Pages(mutable_page_count as u32),
+                mutable_page_count,
                 sequence_number,
                 required_system_version,
                 odk_keyslot_id,
@@ -419,11 +460,11 @@ pub struct XvcRegionHeader {
 
 #[derive(thiserror::Error, Debug)]
 pub enum XvcRegionHeaderParseError {
-    #[error("invalid offset {0}: must be a multiple of page size ({PAGE_SIZE})")]
-    InvalidOffset(u64),
+    #[error("invalid offset {0:?}: must be a multiple of page size ({PAGE_SIZE})")]
+    InvalidOffset(Bytes),
 
-    #[error("invalid length {0}: must be a multiple of page size ({PAGE_SIZE})")]
-    InvalidLength(u64),
+    #[error("invalid length {0:?}: must be a multiple of page size ({PAGE_SIZE})")]
+    InvalidLength(Bytes),
 }
 
 impl BinaryTryParse for XvcRegionHeader {
@@ -444,14 +485,14 @@ impl BinaryTryParse for XvcRegionHeader {
         let (first_segment_index, r) = r.read::<U32>();
         let (description, r) = r.read::<[U16; 0x20]>();
 
-        let (offset, r) = r.read::<U64>();
-        let (length, r) = r.read::<U64>();
+        let (offset, r) = r.read::<BytesParse<U64>>();
+        let (length, r) = r.read::<BytesParse<U64>>();
 
-        let offset = Bytes(offset)
+        let offset = offset
             .to_page_index_aligned()
             .ok_or(Self::Error::InvalidOffset(offset))?;
 
-        let length = Bytes(length)
+        let length = length
             .to_page_index_aligned()
             .ok_or(Self::Error::InvalidLength(length))?;
 
@@ -682,13 +723,6 @@ impl XvdHeader {
 
     pub fn drive_page_count(&self) -> Pages {
         self.drive_size.to_page_count()
-    }
-
-    pub fn number_of_hashed_pages(&self) -> Pages {
-        self.drive_page_count()
-            + self.user_data_page_count()
-            + self.xvc_data_page_count()
-            + self.dynamic_header_page_count()
     }
 
     pub fn number_of_metadata_pages(&self) -> Pages {
