@@ -1,10 +1,13 @@
+use super::layout::MAX_HASHED_PAGES;
 use super::{
-    LEGACY_SECTOR_SIZE, PAGE_SIZE, SECTOR_SIZE, WriteablePolicyFlags,
-    XVD_HEADER_INCL_SIGNATURE_SIZE, XvcInfoFlags, XvcRegionFlags, XvcRegionId,
-    XvcRegionPresenceInfoFlags, XvdContentType, XvdSegmentMetadataSegmentFlags, XvdType,
-    XvdVolumeFlags,
+    WriteablePolicyFlags, XVD_HEADER_INCL_SIGNATURE_SIZE, XvcInfoFlags, XvcRegionFlags,
+    XvcRegionId, XvcRegionPresenceInfoFlags, XvdContentType, XvdSegmentMetadataSegmentFlags,
+    XvdType, XvdVolumeFlags,
 };
-use crate::math::{bytes_to_pages, calculate_number_of_hash_pages, page_number_to_offset};
+use crate::layout::{
+    Bytes, BytesParse, LEGACY_SECTOR_SIZE, PAGE_SIZE, Pages, PagesParse, SECTOR_SIZE,
+};
+use crate::math::calculate_number_of_hash_pages;
 
 use msixvc_common::parse::byteorder::little_endian::*;
 use msixvc_common::parse::structs::{Filetime, Version};
@@ -29,17 +32,17 @@ pub struct XvdHeader {
     pub volume_flags: XvdVolumeFlags,
     pub format_version: u32,
     pub file_time_created: DateTime<chrono::Utc>,
-    pub drive_size: u64,
+    pub drive_size: Bytes,
     pub vduid: Uuid,
     pub uduid: Uuid,
     pub top_hash_block_hash: [u8; 0x20],
     pub original_xvc_data_hash: [u8; 0x20],
     pub xvd_type: XvdType,
     pub xvd_content_type: XvdContentType,
-    pub embedded_xvd_length: u32,
-    pub user_data_length: u32,
-    pub xvc_data_length: u32,
-    pub dynamic_header_length: u32,
+    pub embedded_xvd_length: Bytes,
+    pub user_data_length: Bytes,
+    pub xvc_data_length: Bytes,
+    pub dynamic_header_length: Bytes,
     pub block_size: u32,
     pub ext_entries: [XvdExtEntry; 0x4],
     pub capabilities: [u16; 0x8],
@@ -56,7 +59,7 @@ pub struct XvdHeader {
     pub writeable_expiration_date: u32,
     pub writeable_policy_flags: WriteablePolicyFlags,
     pub persistent_local_storage_size: u32,
-    pub mutable_page_count: u8,
+    pub mutable_page_count: Pages,
     pub sequence_number: i64,
     pub required_system_version: Version,
     pub odk_keyslot_id: u32,
@@ -78,6 +81,9 @@ pub enum XvdHeaderParseError {
 
     #[error("invalid xvd content type: {0}")]
     InvalidXvdContentType(#[from] TryFromPrimitiveError<XvdContentType>),
+
+    #[error("invalid hashed pages count: {hashed_pages:?}, must be less than {MAX_HASHED_PAGES:?}")]
+    InvalidHashedPagesCount { hashed_pages: Pages },
 }
 
 impl BinaryTryParse for XvdHeader {
@@ -95,7 +101,7 @@ impl BinaryTryParse for XvdHeader {
         let (volume_flags, r) = r.read::<XvdVolumeFlags>();
         let (format_version, r) = r.read::<U32>();
         let (file_time_created, r) = r.read::<Filetime>();
-        let (drive_size, r) = r.read::<U64>();
+        let (drive_size, r) = r.read::<BytesParse<U64>>();
 
         let (vduid, r) = r.read::<Uuid>();
         let (uduid, r) = r.read::<Uuid>();
@@ -106,11 +112,46 @@ impl BinaryTryParse for XvdHeader {
         let (xvd_type, r) = r.try_read::<XvdType>()?;
         let (xvd_content_type, r) = r.try_read::<XvdContentType>()?;
 
-        let (embedded_xvd_length, r) = r.read::<U32>();
-        let (user_data_length, r) = r.read::<U32>();
-        let (xvc_data_length, r) = r.read::<U32>();
-        let (dynamic_header_length, r) = r.read::<U32>();
+        let (embedded_xvd_length, r) = r.read::<BytesParse<U32>>();
+        let (user_data_length, r) = r.read::<BytesParse<U32>>();
+        let (xvc_data_length, r) = r.read::<BytesParse<U32>>();
+        let (dynamic_header_length, r) = r.read::<BytesParse<U32>>();
         let (block_size, r) = r.read::<U32>();
+
+        // Check that the number of hashed pages doesn't exceed the maximum
+        {
+            // All sections except for `drive_size` are parsed as an u32, so
+            // they cannot overflow when adding together. Check the drive size
+            // first, and if it doesn't overflow then check the sum.
+
+            if drive_size > MAX_HASHED_PAGES.to_bytes() {
+                return Err(Self::Error::InvalidHashedPagesCount {
+                    // We can't do `drive_size.to_page_count()` here, as the cast from u64
+                    // to u32 could fail.
+                    hashed_pages: if drive_size.0.div_ceil(PAGE_SIZE as u64) >= u32::MAX as u64 {
+                        Pages(u32::MAX)
+                    } else {
+                        drive_size.to_page_count()
+                    },
+                });
+            }
+
+            // The `drive_size` didn't overflow the maximum number of pages.
+            // Now check that adding the other sections is still in-bounds.
+
+            let hashed_pages = Pages(
+                user_data_length
+                    .to_page_count()
+                    .0
+                    .saturating_add(xvc_data_length.to_page_count().0)
+                    .saturating_add(dynamic_header_length.to_page_count().0)
+                    .saturating_add(drive_size.to_page_count().0),
+            );
+
+            if hashed_pages > MAX_HASHED_PAGES {
+                return Err(Self::Error::InvalidHashedPagesCount { hashed_pages });
+            }
+        }
 
         let (ext_entries, r) = r.read::<[XvdExtEntry; 4]>();
         let (capabilities, r) = r.read::<[U16; 8]>();
@@ -132,7 +173,7 @@ impl BinaryTryParse for XvdHeader {
         let (writeable_policy_flags, r) = r.read::<WriteablePolicyFlags>();
 
         let (persistent_local_storage_size, r) = r.read::<U32>();
-        let (mutable_page_count, r) = r.read::<u8>();
+        let (mutable_page_count, r) = r.read::<PagesParse<u8>>();
 
         let (_unknown271, r) = r.read::<u8>();
         let (_unknown272, r) = r.array::<0x10>();
@@ -412,20 +453,18 @@ pub struct XvcRegionHeader {
     pub flags: XvcRegionFlags,
     pub first_segment_index: u32,
     pub description: [u16; 0x20], // UTF-16
-    // Multiple of PAGE_SIZE
-    pub offset: u64,
-    // Multiple of PAGE_SIZE
-    pub length: u64,
+    pub offset: Pages,
+    pub length: Pages,
     pub hash: u64,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum XvcRegionHeaderParseError {
-    #[error("invalid offset {0}: must be a multiple of page size ({PAGE_SIZE})")]
-    InvalidOffset(u64),
+    #[error("invalid offset {0:?}: must be a multiple of page size ({PAGE_SIZE})")]
+    InvalidOffset(Bytes),
 
-    #[error("invalid length {0}: must be a multiple of page size ({PAGE_SIZE})")]
-    InvalidLength(u64),
+    #[error("invalid length {0:?}: must be a multiple of page size ({PAGE_SIZE})")]
+    InvalidLength(Bytes),
 }
 
 impl BinaryTryParse for XvcRegionHeader {
@@ -446,16 +485,16 @@ impl BinaryTryParse for XvcRegionHeader {
         let (first_segment_index, r) = r.read::<U32>();
         let (description, r) = r.read::<[U16; 0x20]>();
 
-        let (offset, r) = r.read::<U64>();
-        let (length, r) = r.read::<U64>();
+        let (offset, r) = r.read::<BytesParse<U64>>();
+        let (length, r) = r.read::<BytesParse<U64>>();
 
-        if !offset.is_multiple_of(PAGE_SIZE as u64) {
-            return Err(Self::Error::InvalidOffset(offset));
-        }
+        let offset = offset
+            .to_page_index_aligned()
+            .ok_or(Self::Error::InvalidOffset(offset))?;
 
-        if !length.is_multiple_of(PAGE_SIZE as u64) {
-            return Err(Self::Error::InvalidLength(length));
-        }
+        let length = length
+            .to_page_index_aligned()
+            .ok_or(Self::Error::InvalidLength(length))?;
 
         let (hash, r) = r.read::<U64>();
 
@@ -662,38 +701,31 @@ impl BinaryParse for XvdSegmentMetadataSegment {
 }
 
 impl XvdHeader {
-    pub fn mutable_data_length(&self) -> u64 {
-        page_number_to_offset(self.mutable_page_count as u64)
+    pub fn mutable_data_length(&self) -> Bytes {
+        self.mutable_page_count.to_bytes()
     }
 
-    pub fn user_data_page_count(&self) -> u64 {
-        bytes_to_pages(self.user_data_length as u64)
+    pub fn user_data_page_count(&self) -> Pages {
+        self.user_data_length.to_page_count()
     }
 
-    pub fn xvc_data_page_count(&self) -> u64 {
-        bytes_to_pages(self.xvc_data_length as u64)
+    pub fn xvc_data_page_count(&self) -> Pages {
+        self.xvc_data_length.to_page_count()
     }
 
-    pub fn embedded_xvd_page_count(&self) -> u64 {
-        bytes_to_pages(self.embedded_xvd_length as u64)
+    pub fn embedded_xvd_page_count(&self) -> Pages {
+        self.embedded_xvd_length.to_page_count()
     }
 
-    pub fn dynamic_header_page_count(&self) -> u64 {
-        bytes_to_pages(self.dynamic_header_length as u64)
+    pub fn dynamic_header_page_count(&self) -> Pages {
+        self.dynamic_header_length.to_page_count()
     }
 
-    pub fn drive_page_count(&self) -> u64 {
-        bytes_to_pages(self.drive_size)
+    pub fn drive_page_count(&self) -> Pages {
+        self.drive_size.to_page_count()
     }
 
-    pub fn number_of_hashed_pages(&self) -> u64 {
-        self.drive_page_count()
-            + self.user_data_page_count()
-            + self.xvc_data_page_count()
-            + self.dynamic_header_page_count()
-    }
-
-    pub fn number_of_metadata_pages(&self) -> u64 {
+    pub fn number_of_metadata_pages(&self) -> Pages {
         self.user_data_page_count() + self.xvc_data_page_count() + self.dynamic_header_page_count()
     }
 
@@ -705,33 +737,34 @@ impl XvdHeader {
         }
     }
 
-    pub fn mdu_offset(&self) -> u64 {
-        page_number_to_offset(self.embedded_xvd_page_count()) + XVD_HEADER_INCL_SIGNATURE_SIZE
+    pub fn mdu_offset(&self) -> Bytes {
+        self.embedded_xvd_page_count().to_bytes() + Bytes(XVD_HEADER_INCL_SIGNATURE_SIZE)
     }
 
-    pub fn hash_tree_offset(&self) -> u64 {
+    pub fn hash_tree_offset(&self) -> Bytes {
         self.mutable_data_length() + self.mdu_offset()
     }
 
-    pub fn hash_tree_info(&self) -> (u64, u64) {
-        calculate_number_of_hash_pages(
-            self.number_of_hashed_pages(),
+    pub fn hash_tree_info(&self) -> (u64, Pages) {
+        let (levels, pages) = calculate_number_of_hash_pages(
+            self.number_of_hashed_pages().0,
             self.volume_flags.is_resiliency_enabled(),
-        )
+        );
+
+        (levels, Pages(pages))
     }
 
-    pub fn user_data_offset(&self, hash_tree_page_count: u64) -> u64 {
+    pub fn user_data_offset(&self, hash_tree_page_count: Pages) -> Bytes {
         let hash_pages_offset = if self.volume_flags.is_data_integrity_enabled() {
-            page_number_to_offset(hash_tree_page_count)
+            hash_tree_page_count.to_bytes()
         } else {
-            0
+            Bytes(0)
         };
 
         hash_pages_offset + self.hash_tree_offset()
     }
 
-    pub fn xvc_info_offset(&self, hash_tree_page_count: u64) -> u64 {
-        page_number_to_offset(self.user_data_page_count())
-            + self.user_data_offset(hash_tree_page_count)
+    pub fn xvc_info_offset(&self, hash_tree_page_count: Pages) -> Bytes {
+        self.user_data_page_count().to_bytes() + self.user_data_offset(hash_tree_page_count)
     }
 }
