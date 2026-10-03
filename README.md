@@ -14,7 +14,7 @@
 
 The project can now login, download packages and obtain licenses for games.
 
-These parts are still quite scattered arround.
+These parts are still quite scattered around.
 
 - [x] Device login
 - [x] User login
@@ -83,6 +83,12 @@ Running xodus-service in debug
 cargo run --bin xodus-service
 ```
 
+Debug and profile `xodus-cli` or `xodus-service` with [tokio-console]([tokio-console](https://github.com/tokio-rs/console))
+
+```
+RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console 
+```
+
 > [!WARNING]
 > For better performance when decrypting MSIXVC files, the `aes` and `ssse3` features are enabled on `x86_64`,
 > and the `aes` feature is enabled on `aarch64`. This means that the program will crash with an illegal instruction
@@ -97,7 +103,7 @@ cargo run --bin xodus-service
 Usage: xodus-cli <COMMAND>
 
 Commands:
-  download    Download msixvc or xsp files fo given game
+  download    Download msixvc or xsp files for a given game
   license     Dump CIKs for use with XvdTool
   extract     Extract locally stored msixvc file
   login       
