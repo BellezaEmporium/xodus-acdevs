@@ -1,0 +1,12 @@
+[package]
+name = "xodus-ui"
+version = "0.1.0"
+edition = "2024"
+rust-version = { workspace = true }
+
+[dependencies]
+xodus = { path = "../xodus" }
+egui = "0.36.2"
+egui_extras = { version = "0.36.2", features = ["svg"] }
+eframe = "0.36.2"
+image = "0.25.10"

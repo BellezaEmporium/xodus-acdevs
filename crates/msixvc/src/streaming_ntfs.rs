@@ -1,22 +1,10 @@
-use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
-use ntfs_core::{
-    parse_attributes,
-    parse_attribute_list,
-    Attribute,
-    AttributeBody,
-    MftRecordHeader,
-    NtfsError,
-    NtfsFs,
-    Run,
+use ntfs::attribute_value::{
+    NtfsAttributeListNonResidentAttributeValue, NtfsAttributeValue, NtfsDataRun,
 };
-
-const ATTR_TYPE_ATTRIBUTE_LIST: u32 = 0x20;
-const ATTR_TYPE_DATA: u32 = 0x80;
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-const ROOT_FILE_RECORD_NUMBER: u64 = 5;
+use ntfs::{Ntfs, NtfsAttributeType, NtfsFile};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NtfsDataRunReport {
@@ -40,284 +28,131 @@ impl NtfsStreamLayoutReport {
     }
 }
 
-pub fn collect_ntfs_stream_layouts<T>(
-    fs: &mut T,
-) -> ntfs_core::Result<Vec<NtfsStreamLayoutReport>>
+pub fn collect_ntfs_stream_layouts<T>(fs: &mut T) -> ntfs::Result<Vec<NtfsStreamLayoutReport>>
 where
     T: Read + Seek,
 {
-    // NtfsFs owns the reader; borrowing it lets us retain the existing API.
-    let ntfs = NtfsFs::open(&mut *fs)?;
+    fs.rewind()?;
+    let mut ntfs = Ntfs::new(fs)?;
+    ntfs.read_upcase_table(fs)?;
 
+    let root = ntfs.root_directory(fs)?;
     let mut reports = Vec::new();
-    let mut visited_directories = HashSet::new();
-
-    collect_directory_stream_layouts(
-        &ntfs,
-        ROOT_FILE_RECORD_NUMBER,
-        Path::new(""),
-        &mut visited_directories,
-        &mut reports,
-    )?;
-
+    collect_directory_stream_layouts(&ntfs, fs, &root, Path::new(""), &mut reports)?;
     Ok(reports)
 }
 
 pub fn collect_fragmented_or_embedded_ntfs_stream_layouts<T>(
     fs: &mut T,
-) -> ntfs_core::Result<Vec<NtfsStreamLayoutReport>>
+) -> ntfs::Result<Vec<NtfsStreamLayoutReport>>
 where
     T: Read + Seek,
 {
     let reports = collect_ntfs_stream_layouts(fs)?;
-
     Ok(reports
         .into_iter()
         .filter(NtfsStreamLayoutReport::is_fragmented_or_embedded)
         .collect())
 }
 
-fn collect_directory_stream_layouts<R>(
-    ntfs: &NtfsFs<R>,
-    directory_record_number: u64,
+fn collect_directory_stream_layouts<T>(
+    ntfs: &Ntfs,
+    fs: &mut T,
+    dir: &NtfsFile<'_>,
     base_path: &Path,
-    visited_directories: &mut HashSet<u64>,
     reports: &mut Vec<NtfsStreamLayoutReport>,
-) -> ntfs_core::Result<()>
+) -> ntfs::Result<()>
 where
-    R: Read + Seek,
+    T: Read + Seek,
 {
-    // Prevent cycles in malformed directory indexes.
-    if !visited_directories.insert(directory_record_number) {
-        return Ok(());
-    }
+    let index = dir.directory_index(fs)?;
+    let mut entries = index.entries();
 
-    let directory_record = ntfs.read_record(directory_record_number)?;
-    let entries = ntfs.directory_entries(&directory_record)?;
-
-    for entry in entries {
-        let Some(file_name) = entry.file_name.as_ref() else {
-            continue;
+    while let Some(entry) = entries.next(fs) {
+        let entry = entry?;
+        let key = match entry.key() {
+            Some(Ok(key)) => key,
+            Some(Err(err)) => return Err(err),
+            None => continue,
         };
-
-        let name = file_name.name.as_str();
-
+        let name = key.name().to_string_lossy();
         if name == "." || name == ".." {
             continue;
         }
 
-        let path = join_ntfs_path(base_path, name);
-        let child_record_number = entry.file_reference.record_number;
+        let path = join_ntfs_path(base_path, name.as_ref());
+        let file = entry.to_file(ntfs, fs)?;
 
-        if file_name.flags & FILE_ATTRIBUTE_DIRECTORY != 0 {
-            collect_directory_stream_layouts(
-                ntfs,
-                child_record_number,
-                &path,
-                visited_directories,
-                reports,
-            )?;
+        if file.is_directory() {
+            collect_directory_stream_layouts(ntfs, fs, &file, &path, reports)?;
         } else {
-            collect_file_stream_layouts(
-                ntfs,
-                child_record_number,
-                &path,
-                reports,
-            )?;
+            collect_file_stream_layouts(fs, &file, &path, reports)?;
         }
     }
 
     Ok(())
 }
 
-fn parse_record_attributes(
-    record: &[u8],
-) -> ntfs_core::Result<Vec<Attribute>> {
-    let header = MftRecordHeader::parse(record)?;
-
-    parse_attributes(
-        record,
-        header.first_attribute_offset as usize,
-    )
-}
-
-pub(crate) fn collect_file_stream_layouts<R>(
-    ntfs: &NtfsFs<R>,
-    file_record_number: u64,
+pub(crate) fn collect_file_stream_layouts<T>(
+    fs: &mut T,
+    file: &NtfsFile<'_>,
     path: &Path,
     reports: &mut Vec<NtfsStreamLayoutReport>,
-) -> ntfs_core::Result<()>
+) -> ntfs::Result<()>
 where
-    R: Read + Seek,
+    T: Read + Seek,
 {
-    let record = ntfs.read_record(file_record_number)?;
-    let attributes = parse_record_attributes(&record)?;
+    let mut attributes = file.attributes();
 
-    // Cache attributes by MFT record so we can also discover $DATA streams
-    // referenced by a resident $ATTRIBUTE_LIST.
-    let mut attribute_cache: HashMap<u64, Vec<Attribute>> =
-        HashMap::new();
+    while let Some(item) = attributes.next(fs) {
+        let item = item?;
+        let attribute = item.to_attribute()?;
 
-    attribute_cache.insert(file_record_number, attributes.clone());
-
-    // Each candidate contains its starting VCN and parsed attribute.
-    // The lowest VCN carries the authoritative stream length.
-    let mut candidates: Vec<(u64, Attribute)> = Vec::new();
-
-    // An attribute ID is unique within an MFT record.
-    let mut seen_attributes: HashSet<(u64, u16)> =
-        HashSet::new();
-
-    for attribute in &attributes {
-        if attribute.type_code != ATTR_TYPE_DATA {
+        if attribute.ty()? != NtfsAttributeType::Data {
             continue;
         }
 
-        seen_attributes.insert((
-            file_record_number,
-            attribute.attribute_id,
-        ));
-
-        let start_vcn = match &attribute.body {
-            AttributeBody::Resident { .. } => 0,
-            AttributeBody::NonResident { start_vcn, .. } => {
-                *start_vcn
-            }
+        let stream_name = attribute.name()?.to_string_lossy();
+        let full_path = if stream_name.is_empty() {
+            path.display().to_string()
+        } else {
+            format!("{}:{}", path.display(), stream_name)
         };
+        let value_length = attribute.value_length();
+        let value = attribute.value(fs)?;
 
-        candidates.push((start_vcn, attribute.clone()));
-    }
-
-    // The high-level NTFS crate resolves extension records when a stream
-    // name is known. A resident $ATTRIBUTE_LIST also lets us discover
-    // named streams whose attributes live entirely in extension records.
-    if let Some(list_content) = attributes
-        .iter()
-        .find(|a| a.type_code == ATTR_TYPE_ATTRIBUTE_LIST)
-        .and_then(|a| a.resident_content(&record))
-    {
-        let entries = parse_attribute_list(list_content)?;
-
-        for entry in entries {
-            if entry.type_code != ATTR_TYPE_DATA {
-                continue;
-            }
-
-            let source_record_number =
-                entry.base_reference.record_number;
-
-            if !seen_attributes.insert((
-                source_record_number,
-                entry.attribute_id,
-            )) {
-                continue;
-            }
-
-            if !attribute_cache.contains_key(&source_record_number) {
-                let source_record =
-                    ntfs.read_record(source_record_number)?;
-
-                let source_attributes =
-                    parse_record_attributes(&source_record)?;
-
-                attribute_cache.insert(
-                    source_record_number,
-                    source_attributes,
-                );
-            }
-
-            let referenced_attribute = attribute_cache
-                .get(&source_record_number)
-                .and_then(|source_attributes| {
-                    source_attributes.iter().find(|attribute| {
-                        attribute.type_code == entry.type_code
-                            && attribute.attribute_id
-                                == entry.attribute_id
-                            && attribute.name == entry.name
-                    })
-                })
-                .cloned()
-                .ok_or(NtfsError::BadAttributeList(
-                    "referenced $DATA attribute not found",
-                ))?;
-
-            candidates.push((
-                entry.start_vcn,
-                referenced_attribute,
-            ));
-        }
-    }
-
-    // Process VCN 0 first so a later extension fragment cannot accidentally
-    // supply the size of the complete stream.
-    candidates.sort_by_key(|(start_vcn, _)| *start_vcn);
-
-    let mut reported_streams: HashSet<Option<String>> =
-        HashSet::new();
-
-    let cluster_size = ntfs.boot().cluster_size();
-
-    for (_, attribute) in candidates {
-        let stream_name = attribute.name.clone();
-
-        // Multiple attribute-list entries can describe fragments of the
-        // same stream. Emit one report per stream, not one per fragment.
-        if !reported_streams.insert(stream_name.clone()) {
-            continue;
-        }
-
-        let report_path = match stream_name.as_deref() {
-            Some(name) => format!("{}:{}", path.display(), name),
-            None => path.display().to_string(),
-        };
-
-        let report = match &attribute.body {
-            AttributeBody::Resident {
-                content_length,
-                ..
-            } => {
-                let length = u64::from(*content_length);
-
-                NtfsStreamLayoutReport {
-                    file_record_number,
-                    path: report_path,
-                    resident_data: length != 0,
-                    resident_data_length: length,
-                    value_length: length,
-                    data_runs: Vec::new(),
-                }
-            }
-
-            AttributeBody::NonResident {
-                real_size,
-                ..
-            } => {
-                // Unlike the old NtfsDataRun iterator, ntfs-core returns
-                // run lengths in clusters and LCNs rather than byte offsets.
-                let runs = ntfs.runs_by_record(
-                    file_record_number,
-                    stream_name.as_deref(),
-                )?;
-
-                let data_runs = runs
-                    .into_iter()
-                    .map(|run| {
-                        data_run_report_from_run(
-                            run,
-                            cluster_size,
-                        )
-                    })
-                    .collect::<ntfs_core::Result<Vec<_>>>()?;
-
-                NtfsStreamLayoutReport {
-                    file_record_number,
-                    path: report_path,
-                    resident_data: false,
-                    resident_data_length: 0,
-                    value_length: *real_size,
-                    data_runs,
-                }
-            }
+        let report = match value {
+            NtfsAttributeValue::Resident(value) => NtfsStreamLayoutReport {
+                file_record_number: file.file_record_number(),
+                path: full_path,
+                resident_data: !value.is_empty(),
+                resident_data_length: value.len(),
+                value_length,
+                data_runs: Vec::new(),
+            },
+            NtfsAttributeValue::NonResident(value) => NtfsStreamLayoutReport {
+                file_record_number: file.file_record_number(),
+                path: full_path,
+                resident_data: false,
+                resident_data_length: 0,
+                value_length,
+                data_runs: value
+                    .data_runs()
+                    .map(data_run_report_from_run)
+                    .collect::<ntfs::Result<_>>()?,
+            },
+            NtfsAttributeValue::AttributeListNonResident(value) => NtfsStreamLayoutReport {
+                file_record_number: file.file_record_number(),
+                path: full_path,
+                resident_data: false,
+                resident_data_length: 0,
+                value_length,
+                data_runs: synthesize_data_runs_from_value(
+                    fs,
+                    value,
+                    file.ntfs().cluster_size() as usize,
+                )?,
+            },
         };
 
         reports.push(report);
@@ -326,28 +161,62 @@ where
     Ok(())
 }
 
-fn data_run_report_from_run(
-    run: Run,
-    cluster_size: u64,
-) -> ntfs_core::Result<NtfsDataRunReport> {
-    let start = match run.lcn {
-        Some(lcn) => Some(
-            lcn.checked_mul(cluster_size)
-                .ok_or(NtfsError::BadRunlist(
-                    "data-run byte offset overflow",
-                ))?,
-        ),
-        None => None,
+fn synthesize_data_runs_from_value<T>(
+    fs: &mut T,
+    value: NtfsAttributeListNonResidentAttributeValue<'_, '_>,
+    cluster_size: usize,
+) -> ntfs::Result<Vec<NtfsDataRunReport>>
+where
+    T: Read + Seek,
+{
+    let mut attached = NtfsAttributeValue::AttributeListNonResident(value).attach(fs);
+    let mut runs = Vec::new();
+    let mut buf = vec![0u8; cluster_size.max(1)];
+
+    loop {
+        let start = attached
+            .data_position()
+            .value()
+            .map(|position| position.get());
+        let bytes_read = attached.read(&mut buf)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        append_run_segment(&mut runs, start, bytes_read as u64);
+    }
+
+    Ok(runs)
+}
+
+fn append_run_segment(runs: &mut Vec<NtfsDataRunReport>, start: Option<u64>, length: u64) {
+    let Some(last) = runs.last_mut() else {
+        runs.push(NtfsDataRunReport { start, length });
+        return;
     };
 
-    let length = run
-        .length
-        .checked_mul(cluster_size)
-        .ok_or(NtfsError::BadRunlist(
-            "data-run byte length overflow",
-        ))?;
+    match (last.start, start) {
+        (Some(last_start), Some(start)) if last_start + last.length == start => {
+            last.length += length;
+        }
+        (None, None) => {
+            last.length += length;
+        }
+        _ => runs.push(NtfsDataRunReport { start, length }),
+    }
+}
 
-    Ok(NtfsDataRunReport { start, length })
+fn data_run_report_from_run(
+    data_run: ntfs::Result<NtfsDataRun>,
+) -> ntfs::Result<NtfsDataRunReport> {
+    let data_run = data_run?;
+    Ok(NtfsDataRunReport {
+        start: data_run
+            .data_position()
+            .value()
+            .map(|position| position.get()),
+        length: data_run.allocated_size(),
+    })
 }
 
 fn join_ntfs_path(base_path: &Path, name: &str) -> PathBuf {
