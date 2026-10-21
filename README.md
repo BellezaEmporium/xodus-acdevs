@@ -84,7 +84,7 @@ Running xodus-service in debug
 cargo run --bin xodus-service
 ```
 
-Debug and profile `xodus-cli` or `xodus-service` with [tokio-console]([tokio-console](https://github.com/tokio-rs/console))
+Debug and profile `xodus-cli` or `xodus-service` with [tokio-console](https://github.com/tokio-rs/console)
 
 ```
 RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio_console 
