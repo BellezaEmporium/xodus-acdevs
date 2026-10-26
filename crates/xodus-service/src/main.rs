@@ -40,11 +40,24 @@ async fn main() {
 
     xodus::secrets::init_secrets().expect("Failed to init keychain");
     let tokens = Arc::new(TokenManager::with_keychain_and_memory());
-    xodus::tokens::device::ensure_device_credentials(&reqwest::Client::new(), &tokens).await;
-    let xodus::models::secrets::Token::Legacy(device_token) =
-        tokens.get_device_sts_token().unwrap()
-    else {
-        panic!("Device token isnt legacy")
+    if let Err(err) =
+        xodus::tokens::device::ensure_device_credentials(&reqwest::Client::new(), &tokens).await
+    {
+        eprintln!("failed to prepare device credentials: {err}");
+        return;
+    }
+    let device_token = match tokens.get_device_sts_token() {
+        Ok(xodus::models::secrets::Token::Legacy(token)) => token,
+        Ok(_) => {
+            eprintln!(
+                "device token is not a legacy token; delete the stored credentials and retry"
+            );
+            return;
+        }
+        Err(err) => {
+            eprintln!("no device STS token available after provisioning: {err}");
+            return;
+        }
     };
 
     let runtime_dir = utils::get_runtime_dir();

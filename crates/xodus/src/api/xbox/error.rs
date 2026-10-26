@@ -22,4 +22,7 @@ pub enum AuthError {
 
     #[error("missing claim: {0}")]
     MissingClaim(&'static str),
+
+    #[error("invalid token in SOAP response: {0}")]
+    Token(#[from] crate::models::secrets::TokenConversionError),
 }

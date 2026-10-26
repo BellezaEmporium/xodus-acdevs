@@ -63,15 +63,14 @@ pub async fn parse_message(
             )
             .await;
 
-            let ms_device_rps_token = if let Some((Token::Compact(ms_device_token), Ok(lifetime))) =
-                device_token_resp.ok().map(|t| {
-                    let expiry = chrono::DateTime::parse_from_rfc3339(&t.lifetime.expires);
-                    (t.into(), expiry)
-                }) {
-                Some((ms_device_token, lifetime.timestamp()))
-            } else {
-                None
-            };
+            let ms_device_rps_token = device_token_resp.ok().and_then(|t| {
+                let expiry = chrono::DateTime::parse_from_rfc3339(&t.lifetime.expires).ok()?;
+                let converted: Token = t.try_into().ok()?;
+                match converted {
+                    Token::Compact(ms_device_token) => Some((ms_device_token, expiry.timestamp())),
+                    _ => None,
+                }
+            });
 
             let user_token = xodus::api::live::exchange_user_token(
                 &context.client,
@@ -97,7 +96,7 @@ pub async fn parse_message(
                 ) => {
                     if let Some(sts) = collection.security_tokens.pop() {
                         let address = sts.applies_to.endpoint_reference.address.clone();
-                        let sts: Token = sts.into();
+                        let sts: Token = sts.try_into()?;
                         let address = if let Token::Legacy(legacy) = &sts {
                             legacy.key_name.clone().unwrap_or(address)
                         } else {
@@ -109,7 +108,7 @@ pub async fn parse_message(
                     }
                     let token = collection.security_tokens.remove(0);
                     let expiry = chrono::DateTime::parse_from_rfc3339(&token.lifetime.expires)?;
-                    let token: Token = token.into();
+                    let token: Token = token.try_into()?;
                     let Token::Compact(user_token) = token else {
                         return Ok(vec![]);
                     };

@@ -1,5 +1,3 @@
-use quick_xml::de;
-
 use crate::models::xbox::{
     UserAuthProperties, UserAuthRequest, XstsPropertyBag, XstsRequest, XstsResponse,
 };
@@ -75,8 +73,14 @@ pub async fn request_xsts_token(
 pub fn get_xsts_auth_header(xsts: XstsResponse) -> Result<XblAuth, AuthError> {
     tracing::debug!("XSTS Response: {:?}", xsts);
     Ok(XblAuth {
-        uhs: xsts.user_hash().ok_or(AuthError::MissingClaim("uhs"))?.to_owned(),
-        xuid: xsts.xuid().ok_or(AuthError::MissingClaim("xid"))?.to_owned(),
+        uhs: xsts
+            .user_hash()
+            .ok_or(AuthError::MissingClaim("uhs"))?
+            .to_owned(),
+        xuid: xsts
+            .xuid()
+            .ok_or(AuthError::MissingClaim("xid"))?
+            .to_owned(),
         token: xsts.token.clone(),
     })
 }

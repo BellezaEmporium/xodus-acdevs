@@ -53,8 +53,7 @@ impl XstsResponse {
         self.display_claims
             .xui
             .first()
-            .map(|claim| claim.xid.as_deref())
-            .flatten()
+            .and_then(|claim| claim.xid.as_deref())
     }
     pub fn user_hash(&self) -> Option<&str> {
         self.display_claims

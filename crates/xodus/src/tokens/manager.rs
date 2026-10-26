@@ -95,6 +95,19 @@ impl TokenManager {
             .ok_or(TokenStoreError::NotFound)
     }
 
+    /// Like [`Self::get_device_sts_token`], but additionally rejects tokens
+    /// whose advertised expiry (`wsu:Expires`) is in the past.
+    pub fn get_device_sts_token_fresh(&self) -> Result<Token, TokenStoreError> {
+        let token = self.get_device_sts_token()?;
+        if token
+            .expires_at()
+            .is_some_and(|expiry| expiry <= chrono::Utc::now())
+        {
+            return Err(TokenStoreError::Expired);
+        }
+        Ok(token)
+    }
+
     // ---- User STS tokens (keyed by SOAP "applies_to" address) --------------
 
     pub fn get_user_token_for(&self, address: &str) -> Result<Option<Token>, TokenStoreError> {

@@ -25,4 +25,6 @@ pub enum TokenStoreError {
     Serde(#[from] serde_json::Error),
     #[error("entry not found")]
     NotFound,
+    #[error("token has expired and must be refreshed")]
+    Expired,
 }

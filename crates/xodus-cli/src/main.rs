@@ -163,8 +163,11 @@ async fn main() -> ExitCode {
         args.command,
         SubCommand::Clep { .. } | SubCommand::SpLicense { .. } | SubCommand::Logout { .. }
     );
-    if needs_device_credentials {
-        xodus::tokens::device::ensure_device_credentials(&client, &tokens).await;
+    if needs_device_credentials
+        && let Err(err) = xodus::tokens::device::ensure_device_credentials(&client, &tokens).await
+    {
+        eprintln!("failed to prepare device credentials: {err}");
+        return ExitCode::FAILURE;
     }
 
     let code = match args.command {

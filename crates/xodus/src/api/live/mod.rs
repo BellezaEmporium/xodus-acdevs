@@ -143,7 +143,7 @@ mod test {
         let client = reqwest::Client::new();
 
         let mgr = TokenManager::with_memory();
-        ensure_device_credentials(&client, &mgr).await;
+        ensure_device_credentials(&client, &mgr).await.unwrap();
 
         let token: Token = mgr.get_device_sts_token().unwrap();
         let Token::Legacy(token) = token else {
@@ -159,7 +159,7 @@ mod test {
         .await
         .unwrap();
 
-        let ms_device_token: Token = resp.into();
+        let ms_device_token: Token = resp.try_into().unwrap();
         let Token::Compact(ms_device_token) = ms_device_token else {
             todo!("Unsupported token");
         };

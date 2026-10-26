@@ -11,36 +11,58 @@ const LOGIN_MARKET: &str = "en-US";
 const USER_AUTH_SCOPE: &str = "scope=service::user.auth.xboxlive.com::MBI_SSL&api-version=2.0";
 
 pub async fn run(client: &reqwest::Client, tokens: &TokenManager) -> ExitCode {
-    let token = tokens.get_device_sts_token().unwrap();
-    let secrets::Token::Legacy(token) = token else {
+    let device_sts = match tokens.get_device_sts_token() {
+        Ok(token) => token,
+        Err(err) => {
+            eprintln!("could not read device STS token: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let secrets::Token::Legacy(token) = device_sts else {
         eprintln!("Invalid STS token");
         return ExitCode::FAILURE;
     };
     let handler = LoginHandler::new(client.clone(), token, tokens.clone());
-    let output = webview::run_sessions(handler)
-        .expect("failed to login")
-        .flatten();
+    let output = match webview::run_sessions(handler) {
+        Ok(output) => output.flatten(),
+        Err(err) => {
+            eprintln!("failed to login: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let issued_tokens = match output {
         Some(soap::BodyContent::RequestSecurityTokenResponseCollection(collection)) => {
             collection.security_tokens
         }
         Some(soap::BodyContent::RequestSecurityTokenResponse(token)) => vec![*token],
+        Some(other) => {
+            eprintln!("unexpected login response body: {other:?}");
+            return ExitCode::FAILURE;
+        }
         None => {
             eprintln!("Didn't log in");
             vec![]
         }
-        _ => unreachable!(),
     };
 
     for token in issued_tokens {
         let address = token.applies_to.endpoint_reference.address.clone();
-        let token = token.into();
+        let token: secrets::Token = match token.try_into() {
+            Ok(token) => token,
+            Err(err) => {
+                eprintln!("skipping unsupported login token: {err}");
+                continue;
+            }
+        };
         let address = if let secrets::Token::Legacy(legacy) = &token {
             legacy.key_name.clone().unwrap_or(address)
         } else {
             address
         };
-        tokens.save_user_token(address, token).unwrap();
+        if let Err(err) = tokens.save_user_token(address, token) {
+            eprintln!("failed to persist login token: {err}");
+            return ExitCode::FAILURE;
+        }
     }
 
     ExitCode::SUCCESS

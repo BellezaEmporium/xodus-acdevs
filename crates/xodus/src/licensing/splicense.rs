@@ -215,6 +215,9 @@ pub enum SPLicenseParseError {
 
     #[error("could not decode base64 string: {0}")]
     PayloadLengthMismatch(#[from] base64::DecodeError),
+
+    #[error("unsupported CLEP sign state version {0} (expected 4)")]
+    UnsupportedClepVersion(u32),
 }
 
 impl SPLicense {
@@ -386,9 +389,20 @@ impl EncryptedDeviceKey {
 }
 
 impl ClepSignState {
-    pub fn get_rsa_key(&self) -> BCryptRsaBlock {
-        assert!(self.version == 4);
-        BCryptRsaBlock(decrypt_cbc_zero_iv(self.key_schedule, &self.key_data))
+    /// Layout version of this CLEP sign state block.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
+    /// Unwraps the RSA signing key, checking the block layout version first.
+    pub fn get_rsa_key(&self) -> Result<BCryptRsaBlock, SPLicenseParseError> {
+        if self.version != 4 {
+            return Err(SPLicenseParseError::UnsupportedClepVersion(self.version));
+        }
+        Ok(BCryptRsaBlock(decrypt_cbc_zero_iv(
+            self.key_schedule,
+            &self.key_data,
+        )))
     }
 }
 
@@ -436,21 +450,16 @@ impl PackedContentKey {
         let packer = aes_keywrap::Aes128KeyWrapAligned::new(key);
 
         match packer.decapsulate(&self.0) {
-            Ok(unpaked) => Ok(ContentKey(unpaked.try_into().unwrap())),
+            Ok(unpaked) => Ok(ContentKey(
+                unpaked
+                    .try_into()
+                    .map_err(|_| ContentKeyAuthenticationFailed)?,
+            )),
 
-            // These errors do not make sense for decapsulate
-            Err(aes_keywrap::KeywrapError::InvalidExpectedLen)
-            | Err(aes_keywrap::KeywrapError::Unpadded) => unreachable!(),
-
-            // The input is always 40 bytes, so these errors are not possible
-            Err(aes_keywrap::KeywrapError::NotAligned)
-            | Err(aes_keywrap::KeywrapError::TooSmall)
-            | Err(aes_keywrap::KeywrapError::TooBig) => unreachable!(),
-
-            // The only possible error is a failure in the authentication of the key
-            Err(aes_keywrap::KeywrapError::AuthenticationFailed) => {
-                Err(ContentKeyAuthenticationFailed)
-            }
+            // A length mismatch or unauthenticated ciphertext both mean the
+            // wrapped key blob is not what we expect - report it instead of
+            // panicking on malformed license data.
+            Err(_) => Err(ContentKeyAuthenticationFailed),
         }
     }
 }

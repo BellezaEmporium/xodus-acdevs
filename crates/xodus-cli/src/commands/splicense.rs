@@ -14,7 +14,13 @@ pub fn run(block: String) -> ExitCode {
         eprintln!("SPLicenseBlock has no ClepSignState");
         return ExitCode::FAILURE;
     };
-    let key = clep_sign_state.get_rsa_key();
+    let key = match clep_sign_state.get_rsa_key() {
+        Ok(key) => key,
+        Err(err) => {
+            eprintln!("failed to extract RSA key from ClepSignState: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     println!("RSA key is {:?}", BASE64_STANDARD.encode(*key));
 
