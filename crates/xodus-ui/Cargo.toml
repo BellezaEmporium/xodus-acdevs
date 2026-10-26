@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 
 [dependencies]
 xodus = { path = "../xodus" }
-egui = "0.36.2"
-egui_extras = { version = "0.36.2", features = ["svg"] }
-eframe = "0.36.2"
+egui = "0.37.0"
+egui_extras = { version = "0.37.0", features = ["svg"] }
+eframe = "0.37.0"
 image = "0.25.10"

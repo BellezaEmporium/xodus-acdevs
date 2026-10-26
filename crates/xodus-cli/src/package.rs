@@ -1,6 +1,7 @@
 use inquire::Select;
 use xodus::XBOX_LIVE_PACKAGES_PC;
 use xodus::api::displaycatalog::find_products_by_id;
+use xodus::api::xbox::get_xsts_auth_header;
 use xodus::models::packagespc::{PackageDetails, PackageResponse};
 use xodus::models::secrets::Token;
 use xodus::tokens::TokenManager;
@@ -88,21 +89,15 @@ pub async fn get_packages(
         return Err(Box::new(std::io::Error::other("Unsupported user token")));
     };
 
-    let xsts_token =
-        xodus::api::xbox::run(client, dev_token, legacy, "http://update.xboxlive.com").await;
+    let xsts_token = xodus::api::xbox::run(client, dev_token, legacy, "http://update.xboxlive.com").await?;
 
     let response = client
-        .get(format!(
-            "{XBOX_LIVE_PACKAGES_PC}/GetBasePackage/{content_id}"
-        ))
+        .get(format!("{XBOX_LIVE_PACKAGES_PC}/GetBasePackage/{content_id}"))
         .header("x-xbl-contract-version", "3")
-        .header(
-            "Authorization",
-            xodus::api::xbox::get_xsts_auth_header(xsts_token),
-        )
+        .header("Authorization", get_xsts_auth_header(xsts_token)?.header())
         .send()
-        .await
-        .unwrap();
+        .await?
+        .error_for_status()?;
 
     let res: PackageResponse = response.json().await.expect("Failed to get data");
 

@@ -7,7 +7,8 @@ use crate::models::live::ExchangeUserTokenOutcome;
 use crate::models::secrets::{LegacyToken, Token};
 use crate::models::soap;
 
-mod rst;
+// show RST errors to the Xbox auth layer so that they can be surfaced to the user
+pub(crate) mod rst;
 mod utils;
 
 pub const XML_HEADER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>"#;
@@ -146,7 +147,7 @@ mod test {
 
         let token: Token = mgr.get_device_sts_token().unwrap();
         let Token::Legacy(token) = token else {
-            todo!("no a LegacyToken");
+            todo!("not a LegacyToken");
         };
         let resp = exchange_device_token(
             &client,

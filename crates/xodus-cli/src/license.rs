@@ -64,7 +64,7 @@ pub async fn get_license(
         ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(
             token,
         )) => (*token).into(),
-        _ => unreachable!("Only responses are handled"),
+        _ => return Err(xodus::api::xbox::AuthError::UnexpectedBodyContent("Recieved body content doesn't match any of the expected formats.".to_string()).to_string()),
     };
     let Token::Compact(user_token) = user_token else {
         return Err("Unsupported token".to_string());

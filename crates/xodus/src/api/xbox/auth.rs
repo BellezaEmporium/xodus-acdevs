@@ -1,6 +1,22 @@
+use quick_xml::de;
+
 use crate::models::xbox::{
     UserAuthProperties, UserAuthRequest, XstsPropertyBag, XstsRequest, XstsResponse,
 };
+
+use crate::api::xbox::error::AuthError;
+
+pub struct XblAuth {
+    pub uhs: String,
+    pub xuid: String,
+    pub token: String,
+}
+
+impl XblAuth {
+    pub fn header(&self) -> String {
+        format!("XBL3.0 x={};{}", self.uhs, self.token)
+    }
+}
 
 pub async fn authenticate_xbox_user(
     client: &reqwest::Client,
@@ -56,7 +72,11 @@ pub async fn request_xsts_token(
     resp.json().await
 }
 
-pub fn get_xsts_auth_header(xsts: XstsResponse) -> String {
-    let uhs = xsts.user_hash().expect("XSTS response missing xui claim");
-    format!("XBL3.0 x={uhs};{}", xsts.token)
+pub fn get_xsts_auth_header(xsts: XstsResponse) -> Result<XblAuth, AuthError> {
+    tracing::debug!("XSTS Response: {:?}", xsts);
+    Ok(XblAuth {
+        uhs: xsts.user_hash().ok_or(AuthError::MissingClaim("uhs"))?.to_owned(),
+        xuid: xsts.xuid().ok_or(AuthError::MissingClaim("xid"))?.to_owned(),
+        token: xsts.token.clone(),
+    })
 }

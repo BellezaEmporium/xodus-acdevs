@@ -49,6 +49,13 @@ struct XtiClaim {
 }
 
 impl XstsResponse {
+    pub fn xuid(&self) -> Option<&str> {
+        self.display_claims
+            .xui
+            .first()
+            .map(|claim| claim.xid.as_deref())
+            .flatten()
+    }
     pub fn user_hash(&self) -> Option<&str> {
         self.display_claims
             .xui

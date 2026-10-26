@@ -5,15 +5,18 @@ use crate::models::xbox::XstsResponse;
 
 pub mod auth;
 pub mod title;
+pub mod error;
+
 pub use auth::{authenticate_xbox_user, get_xsts_auth_header, request_xsts_token};
+pub use error::*;
 
 pub async fn run(
     client: &reqwest::Client,
     dev_token: LegacyToken,
     legacy: LegacyToken,
     relying_party: &str,
-) -> XstsResponse {
-    let user_token = crate::api::live::exchange_user_token(
+) -> Result<XstsResponse, AuthError> {
+    let exchange = crate::api::live::exchange_user_token(
         client,
         legacy,
         "USERNAME".to_string(),
@@ -26,34 +29,28 @@ pub async fn run(
             Some(soap::PolicyReference::mbi_ssl()),
         )],
     )
-    .await
-    .expect("Failed to get ms user token");
+    .await?;
 
-    let user_token: Token = match user_token {
-        ExchangeUserTokenOutcome::Fault(_) => {
-            eprintln!("Failed to get exchange MS token");
-            panic!("TODO");
-        }
+    let token: Token = match exchange {
         ExchangeUserTokenOutcome::Issued(
-            soap::BodyContent::RequestSecurityTokenResponseCollection(mut collection),
-        ) => {
-            let token = collection.security_tokens.remove(0);
-            token.into()
+            soap::BodyContent::RequestSecurityTokenResponseCollection(mut c),
+        ) => c.security_tokens.remove(0).into(),
+        ExchangeUserTokenOutcome::Issued(
+            soap::BodyContent::RequestSecurityTokenResponse(t),
+        ) => (*t).into(),
+        ExchangeUserTokenOutcome::Issued(_) => {
+            return Err(AuthError::UnexpectedBodyContent("Recieved body content doesn't match any of the expected formats.".to_string()));
         }
-        ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(
-            token,
-        )) => (*token).into(),
-        _ => unreachable!("Only responses are handled"),
+        ExchangeUserTokenOutcome::Fault(f) => {
+            return Err(AuthError::SoapFault(format!("{f:?}")));
+        }
     };
-    let Token::Compact(user_token) = user_token else {
-        eprintln!("Unsupported token");
-        panic!("TODO");
-    };
-    let resp = authenticate_xbox_user(client, user_token)
-        .await
-        .expect("Failed to authenticate Xbox user");
 
-    request_xsts_token(client, resp.token, relying_party)
-        .await
-        .expect("Failed to authenticate Xbox user")
+    let Token::Compact(rps_ticket) = token else {
+        return Err(AuthError::UnsupportedTokenFormat);
+    };
+
+    let user = authenticate_xbox_user(client, rps_ticket).await?;
+    let xsts = request_xsts_token(client, user.token, relying_party).await?;
+    Ok(xsts)
 }
