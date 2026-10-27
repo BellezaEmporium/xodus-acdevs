@@ -1,6 +1,6 @@
-use eframe::egui::{self, FontId, RichText};
 use crate::app::GameLauncher;
 use crate::theme::{MUTED, TEXT};
+use eframe::egui::{self, FontId, RichText};
 
 // WIP, BellezaEmporium 2026.
 // Part of the Xodus UI & the Xodus Game Launcher, for Linux & macOS.
@@ -14,15 +14,15 @@ impl GameLauncher {
                 .color(TEXT),
         );
 
-        if let Some(path) = &self.last_played {
-            if let Some(game) = self.games.iter().find(|game| &game.path == path) {
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new(format!("Last played: {}", game.title))
-                        .size(16.0)
-                        .color(MUTED),
-                );
-            }
+        if let Some(path) = &self.last_played
+            && let Some(game) = self.games.iter().find(|game| &game.path == path)
+        {
+            ui.add_space(12.0);
+            ui.label(
+                RichText::new(format!("Last played: {}", game.title))
+                    .size(16.0)
+                    .color(MUTED),
+            );
         }
     }
 }

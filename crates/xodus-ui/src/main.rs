@@ -9,7 +9,7 @@ mod theme;
 use app::GameLauncher;
 use eframe::egui;
 
- fn main() -> eframe::Result {
+fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1600.0, 1000.0])

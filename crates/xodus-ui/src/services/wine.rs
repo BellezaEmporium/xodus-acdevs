@@ -34,9 +34,21 @@ pub(crate) fn initialize_wine_prefix(wine: &str, prefix: &str) -> Result<String,
         .map_err(|error| format!("Could not create Wine prefix folder: {error}"))?;
     let wineboot = Path::new(wine)
         .parent()
-        .map(|parent| parent.join(if cfg!(windows) { "wineboot.exe" } else { "wineboot" }))
+        .map(|parent| {
+            parent.join(if cfg!(windows) {
+                "wineboot.exe"
+            } else {
+                "wineboot"
+            })
+        })
         .filter(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from(if cfg!(windows) { "wineboot.exe" } else { "wineboot" }));
+        .unwrap_or_else(|| {
+            PathBuf::from(if cfg!(windows) {
+                "wineboot.exe"
+            } else {
+                "wineboot"
+            })
+        });
     let output = Command::new(&wineboot)
         .arg("--init")
         .env("WINEPREFIX", &prefix_path)
@@ -54,5 +66,8 @@ pub(crate) fn initialize_wine_prefix(wine: &str, prefix: &str) -> Result<String,
             prefix_path.display()
         ));
     }
-    Ok(format!("Wine prefix initialized at {}.", prefix_path.display()))
+    Ok(format!(
+        "Wine prefix initialized at {}.",
+        prefix_path.display()
+    ))
 }

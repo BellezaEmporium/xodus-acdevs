@@ -6,7 +6,6 @@ pub const TEXT: Color32 = Color32::from_rgb(238, 238, 238);
 pub const MUTED: Color32 = Color32::from_rgb(125, 126, 130);
 pub const GREEN: Color32 = Color32::from_rgb(105, 177, 62);
 
-
 // Keep icon paths in one place so they can be changed to match the SVG filenames in assets/.
 pub const ICON_LOGO: &str = "assets/Icon/Icon256.png";
 pub const ICON_HOME: &str = "assets/Icon/home.png";

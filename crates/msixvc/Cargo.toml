@@ -6,7 +6,6 @@ rust-version = { workspace = true }
 
 [dependencies]
 msixvc-common = { path = "../msixvc-common" }
-
 tokio = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }

@@ -1,7 +1,7 @@
 use crate::models::game::{Game, GameProvider};
-use std::path::{Path, PathBuf};
 use crate::services::cli::cli_command;
 use crate::services::wine::verify_wine;
+use std::path::Path;
 
 pub fn discover_games(root: &Path) -> std::io::Result<Vec<Game>> {
     let entries = match std::fs::read_dir(root) {
@@ -61,7 +61,7 @@ pub fn discover_games(root: &Path) -> std::io::Result<Vec<Game>> {
         });
     }
 
-    games.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+    games.sort_by_key(|game| game.title.to_lowercase());
     Ok(games)
 }
 
@@ -76,7 +76,10 @@ pub fn launch_game(
         return Err("Set a Wine prefix in Settings before running this game.".to_owned());
     }
     if !Path::new(prefix).join("system.reg").is_file() {
-        return Err("The selected Wine prefix is not initialized. Initialize it in Settings first.".to_owned());
+        return Err(
+            "The selected Wine prefix is not initialized. Initialize it in Settings first."
+                .to_owned(),
+        );
     }
     #[cfg(not(unix))]
     {
@@ -95,7 +98,10 @@ pub fn launch_game(
             .spawn()
             .map_err(|error| format!("Could not start xodus-cli run: {error}"))?;
         drop(child);
-        Ok(format!("Started {} through xodus-cli.", game_path.display()))
+        Ok(format!(
+            "Started {} through xodus-cli.",
+            game_path.display()
+        ))
     }
 }
 
@@ -133,13 +139,12 @@ mod tests {
             .find(|game| game.title == "Example Steam Game")
             .expect("find provider game");
         assert_eq!(steam.executable.as_deref(), Some("game.exe"));
-        assert_eq!(
-            steam.provider.ipc_name().as_deref(),
-            Some("steam - Steam")
+        assert_eq!(steam.provider.ipc_name().as_deref(), Some("steam - Steam"));
+        assert!(
+            games.iter().any(|game| {
+                game.title == "Reincarnation" && game.provider == GameProvider::Xodus
+            })
         );
-        assert!(games.iter().any(|game| {
-            game.title == "Reincarnation" && game.provider == GameProvider::Xodus
-        }));
 
         std::fs::remove_dir_all(root).expect("clean up test library");
     }

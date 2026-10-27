@@ -5,7 +5,7 @@ use std::path::Path;
 // WIP, BellezaEmporium 2026.
 // Part of the Xodus UI & the Xodus Game Launcher, for Linux & macOS.
 
-fn load_svg_texture(
+pub(crate) fn load_svg_texture(
     ctx: &egui::Context,
     name: &str,
     path: impl AsRef<Path>,
@@ -15,30 +15,20 @@ fn load_svg_texture(
     Some(ctx.load_texture(name, color_image, TextureOptions::LINEAR))
 }
 
-fn load_texture(
+pub(crate) fn load_texture(
     ctx: &egui::Context,
     name: &str,
     path: impl AsRef<Path>,
 ) -> Option<TextureHandle> {
     let bytes = std::fs::read(path).ok()?;
 
-    let image = image::load_from_memory(&bytes)
-        .ok()?
-        .to_rgba8();
+    let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
 
-    let size = [
-        image.width() as usize,
-        image.height() as usize,
-    ];
+    let size = [image.width() as usize, image.height() as usize];
 
     let pixels = image.into_raw();
 
-    let color_image =
-        egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
 
-    Some(ctx.load_texture(
-        name,
-        color_image,
-        TextureOptions::LINEAR,
-    ))
+    Some(ctx.load_texture(name, color_image, TextureOptions::LINEAR))
 }

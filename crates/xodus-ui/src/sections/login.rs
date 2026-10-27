@@ -1,6 +1,11 @@
 use eframe::egui::{self, Color32, CornerRadius, FontId, Image, RichText, Vec2};
+use std::sync::mpsc::TryRecvError;
 use std::{sync::mpsc, thread};
+
 use crate::app::GameLauncher;
+use crate::models::session::{Session, User};
+use crate::sections::Page;
+use crate::services::assets::load_texture;
 use crate::services::cli::run_cli_login;
 use crate::state::auth::AuthState;
 use crate::theme::{BG, MUTED, TEXT};
@@ -34,7 +39,11 @@ impl GameLauncher {
         }
 
         // Dark overlay
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(0, 0, 0, 45));
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 45),
+        );
 
         // Keep the login panel fixed to the left quarter of the viewport.
         let sidebar_width = rect.width() * 0.25;
@@ -49,9 +58,7 @@ impl GameLauncher {
         );
 
         ui.scope_builder(
-            egui::UiBuilder::new().max_rect(
-                sidebar_rect.shrink2(Vec2::new(28.0, 20.0)),
-            ),
+            egui::UiBuilder::new().max_rect(sidebar_rect.shrink2(Vec2::new(28.0, 20.0))),
             |ui| {
                 let available_height = ui.available_height();
 
@@ -77,8 +84,8 @@ impl GameLauncher {
                         RichText::new(
                             "Sign in with your Microsoft account\nto access your Xbox library.",
                         )
-                            .size(16.0)
-                            .color(MUTED),
+                        .size(16.0)
+                        .color(MUTED),
                     );
 
                     ui.add_space(36.0);
@@ -86,17 +93,13 @@ impl GameLauncher {
                     let mut retry_login = false;
 
                     match &self.auth {
-                        AuthState::LoggingIn { .. } => {
+                        AuthState::LoggingIn { message } => {
                             ui.spinner();
                             ui.add_space(12.0);
-                            ui.label(
-                                RichText::new("Waiting for Microsoft sign-in…")
-                                    .size(16.0)
-                                    .color(TEXT),
-                            );
+                            ui.label(RichText::new(message).size(16.0).color(TEXT));
                         }
 
-                        AuthState::LoggedOut | AuthState::LoggedIn => {
+                        AuthState::LoggedOut | AuthState::Refreshing | AuthState::LoggedIn(_) => {
                             let button_width = ui.available_width().min(280.0);
                             let button_height = 48.0;
                             let button = egui::Button::new(
@@ -111,6 +114,16 @@ impl GameLauncher {
                             retry_login = ui
                                 .add_sized([button_width, button_height], button)
                                 .clicked();
+                        }
+
+                        AuthState::Expired(message) => {
+                            ui.label(
+                                RichText::new(message)
+                                    .size(15.0)
+                                    .color(Color32::from_rgb(255, 170, 120)),
+                            );
+                            ui.add_space(12.0);
+                            retry_login = ui.button("Sign in again").clicked();
                         }
 
                         AuthState::Error(message) => {
@@ -141,20 +154,58 @@ impl GameLauncher {
             },
         );
     }
-}
 
-pub(crate) fn start_login(&mut self) {
-    if matches!(&self.auth, AuthState::LoggingIn { .. }) {
-        return;
+    pub(crate) fn start_login(&mut self) {
+        if matches!(self.auth, AuthState::LoggingIn { .. }) {
+            return;
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        self.login_result = Some(receiver);
+        self.auth = AuthState::LoggingIn {
+            message: "Waiting for Microsoft sign-in…".to_owned(),
+        };
+
+        // Do not block egui's UI thread while the CLI opens the Microsoft sign-in webview.
+        thread::spawn(move || {
+            let result = run_cli_login();
+            let _ = sender.send(result);
+        });
     }
 
-    let (sender, receiver) = mpsc::channel();
-    self.login_result = Some(receiver);
-    self.auth = AuthState::LoggingIn;
+    pub(crate) fn poll_login_result(&mut self, ctx: &egui::Context) {
+        let result = match self.login_result.as_ref() {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err(
+                    "The Xodus CLI login task ended without returning a result.".to_owned(),
+                )),
+            },
+            None => None,
+        };
 
-    // Do not block egui's UI thread while the CLI opens the Microsoft sign-in webview.
-    thread::spawn(move || {
-        let result = run_cli_login();
-        let _ = sender.send(result);
-    });
+        let Some(result) = result else {
+            return;
+        };
+
+        self.login_result = None;
+        match result {
+            Ok(()) => {
+                let avatar = load_texture(ctx, "avatar", "assets/avatar.jpg");
+                let user = User {
+                    // TokenManager should supply the actual gamertag once wired into this crate.
+                    username: "Xbox account".to_owned(),
+                    avatar,
+                };
+                self.user = Some(user.clone());
+                self.auth = AuthState::LoggedIn(Session {
+                    user: Some(user),
+                    token: None,
+                });
+                self.page = Page::Home;
+            }
+            Err(message) => self.auth = AuthState::Error(message),
+        }
+    }
 }

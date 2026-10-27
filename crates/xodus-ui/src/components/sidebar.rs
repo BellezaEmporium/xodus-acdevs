@@ -1,11 +1,8 @@
-use eframe::egui::{self, Align, CornerRadius, FontId, Layout, RichText, Vec2};
-use egui::Color32;
 use crate::app::GameLauncher;
 use crate::sections::Page;
-use crate::theme::{
-    GREEN, ICON_GAME_PASS, ICON_HOME, ICON_LIBRARY, ICON_SETTINGS, ICON_STORE,
-    MUTED, SIDEBAR, TEXT,
-};
+use crate::theme::{ICON_GAME_PASS, ICON_HOME, ICON_LIBRARY, ICON_SETTINGS, ICON_STORE, SIDEBAR};
+use eframe::egui::{self, Align, CornerRadius, FontId, Layout, RichText, Vec2};
+use egui::Color32;
 
 // WIP, BellezaEmporium 2026.
 // Part of the Xodus UI & the Xodus Game Launcher, for Linux & macOS.

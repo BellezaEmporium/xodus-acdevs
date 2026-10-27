@@ -23,7 +23,7 @@ fn settings_file() -> PathBuf {
     data_directory().join("ui-settings.conf")
 }
 
-fn load_settings() -> std::io::Result<Settings> {
+pub(crate) fn load_settings() -> std::io::Result<Settings> {
     let mut settings = Settings::defaults();
     let contents = match std::fs::read_to_string(settings_file()) {
         Ok(contents) => contents,
@@ -48,7 +48,7 @@ fn load_settings() -> std::io::Result<Settings> {
     Ok(settings)
 }
 
-fn save_settings(settings: &Settings) -> std::io::Result<()> {
+pub(crate) fn save_settings(settings: &Settings) -> std::io::Result<()> {
     std::fs::create_dir_all(data_directory())?;
     let last_played = settings
         .last_played

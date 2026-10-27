@@ -1,6 +1,4 @@
-use eframe::egui::{
-    self, Color32, CornerRadius, FontId, Image, RichText, Sense, Vec2,
-};
+use eframe::egui::{self, Color32, CornerRadius, FontId, Image, RichText, Sense, Vec2};
 
 use crate::app::GameLauncher;
 use crate::sections::Page;
@@ -18,10 +16,7 @@ impl GameLauncher {
         title: &str,
         page: Page,
     ) {
-        let response = ui.allocate_response(
-            Vec2::new(ui.available_width(), 48.0),
-            Sense::click(),
-        );
+        let response = ui.allocate_response(Vec2::new(ui.available_width(), 48.0), Sense::click());
 
         if response.clicked() {
             self.page = page;
@@ -76,12 +71,7 @@ impl GameLauncher {
         );
     }
 
-    pub(crate) fn svg_icon(
-        &self,
-        ui: &mut egui::Ui,
-        path: &str,
-        size: Vec2,
-    ) -> bool {
+    pub(crate) fn svg_icon(&self, ui: &mut egui::Ui, path: &str, size: Vec2) -> bool {
         let Some(texture) = self.icons.get(path) else {
             return false;
         };

@@ -1,7 +1,7 @@
-use eframe::egui;
-use egui::{Color32, FontId, RichText};
 use crate::app::GameLauncher;
 use crate::theme::*;
+use eframe::egui;
+use egui::{Color32, FontId, RichText};
 
 // WIP, BellezaEmporium 2026.
 // Part of the Xodus UI & the Xodus Game Launcher, for Linux & macOS.
@@ -26,11 +26,8 @@ mod store;
 
 impl GameLauncher {
     pub(crate) fn main_content(&mut self, ui: &mut egui::Ui) {
-        ui.painter().rect_filled(
-            ui.max_rect(),
-            egui::CornerRadius::ZERO,
-            crate::theme::BG,
-        );
+        ui.painter()
+            .rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, crate::theme::BG);
         egui::ScrollArea::vertical()
             .id_salt("main-scroll")
             .auto_shrink([false, false])
